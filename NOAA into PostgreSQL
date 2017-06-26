@@ -1,0 +1,48 @@
+#Steps to setup postgresql database
+"""pg_ctl -D /usr/local/var/postgres start
+initdb /usr/local/var/postgres
+createdb NOAA_Weather
+psql -d weather
+CREATE SCHEMA"""
+
+import pandas as pd
+from pandas import DataFrame
+import sqlalchemy
+data = pd.read_csv('Weather.csv',header=None,index_col=False,names=['station_id','observation_date','observation_type','measurement_flag',
+                                                                    'quality_flag','source_flag','observation_time'],parse_dates=['date'])
+
+# There are 62 distinct categories for observation types.
+# All of these are not necessary for estimation, and there exists correlation between many of them.
+# So we take a subset of observation type and cut out other unnecessary columns.
+
+data_subset = data[data.measurement_type.isin(['PRCP', 'SNOW', 'SNWD', 'TMAX', 'TMIN', 'EVAP'])][['station_id', 'observation_date', 'observation_type', 'observation_flag']]
+database = 'NOAA_Weather'
+connstring="postgresql://localhost:5432/%s" % (database)
+conn = sqlalchemy.create_engine(connstring)
+table= 'weather'
+col_datatype_dict = {'observation_flag': sqlalchemy.types.Integer}
+data_subset.to_sql(table, conn, chunksize=100000, index_label='id', dtype=col_datatype_dict)
+metadata = pd.read_csv('ghcnd-stations.txt', sep='\s+',usecols=[0, 1, 2, 3],na_values=['NA'],header=None,names=['id', 'latitude', 'longitude', 'elevation'])
+metadata_table= 'metadata'
+metadata.to_sql(metadata_table, conn, index_label='id')
+observation_type_dict = {'PRCP': 'Precipitation', 'SNOW': 'Snowfall', 'SNWD': 'Snow Depth',
+                     'TMAX': 'Maximum temperature', 'TMIN': 'Minimum temperature','EVAP':'Evaporation'}
+observation_type_df = DataFrame(observation_type_dict.items(), columns=['observation_type', 'weather_description'])
+description= 'observation_types'
+observation_type_df.to_sql(description, conn, index_label='id')
+
+"""Joining 3 tables to make a read oriented denormalized database
+CREATE TABLE weather_read AS
+    SELECT w.station_id,
+           w.observation_date,
+           w.observation_type,
+           ot.weather_description,
+           w.observation_flag,
+           m.latitude,
+           m.longitude,
+           m.elevation
+    FROM weather w
+    JOIN metadata m
+        ON w.station_id = m.station_id
+    JOIN observation_types ot
+        ON w.observation_type = ot.observation_type;"""
